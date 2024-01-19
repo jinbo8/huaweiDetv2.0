@@ -1,0 +1,10 @@
+# train and val data as 1) directory: path/img/, 2) file: path/img.txt, or 3) list: [path1/img/, path2/img/]
+train: /home/zhangli/data-hdd/ccp-lpr_plate_dataset/train.txt
+val: /home/zhangli/data-hdd/ccp-lpr_plate_dataset/val.txt
+test: /home/zhangli/data-hdd/ccp-lpr_plate_dataset/test.txt
+
+# number of classes
+nc: 3      # 单层车牌 双层车牌 自定义车牌
+
+# class names
+names: [ "single", "double", "self-defined"]

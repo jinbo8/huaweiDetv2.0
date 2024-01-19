@@ -1,0 +1,196 @@
+import cv2
+import numpy
+import numpy as np
+import torch
+import onnxruntime
+import math
+import os
+import time
+# ocr om
+import sys
+sys.path.append("/home/tyjt/item/modelzoo-GPL/built-in/PyTorch/Official/cv/object_detection/onnx_infer/huaweiONNXinfer/om/samples/python/common/acllite")
+sys.path.append("../")
+import os
+import json
+import numpy as np
+
+import cv2 as cv
+from PIL import Image
+import pickle
+import LaneFinder
+import acl
+import constants as const
+from acllite_model import AclLiteModel
+from acllite_resource import AclLiteResource
+
+
+
+
+'''测试转出的onnx模型'''
+def def_init(onnx_file, character_dict_path, use_space_char=True):
+    sess = onnxruntime.InferenceSession(onnx_file)
+     
+
+    # 获取输入节点名称
+    input_names = [input.name for input in sess.get_inputs()]
+    # 获取输出节点名称
+    output_names = [output.name for output in sess.get_outputs()]
+    character = []
+    character.append("blank")
+    with open(character_dict_path, "rb") as fin:
+        lines = fin.readlines()
+        for line in lines:
+            line = line.decode('utf-8').strip("\n").strip("\r\n")
+            character.append(line)
+    if use_space_char:
+        character.append(" ")
+    return sess, input_names, output_names, character
+
+def resize_norm_img(img, image_shape=[3, 48, 168]):
+    imgC, imgH, imgW = image_shape
+    h = img.shape[0]
+    w = img.shape[1]
+    ratio = w / float(h)
+    if math.ceil(imgH * ratio) > imgW:
+        resized_w = imgW
+    else:
+        resized_w = int(math.ceil(imgH * ratio))
+    resized_image = cv2.resize(img, (resized_w, imgH))
+    resized_image = resized_image.astype('float32')
+    if image_shape[0] == 1:
+        resized_image = resized_image / 255
+        resized_image = resized_image[np.newaxis, :]
+    else:
+        resized_image = resized_image.transpose((2, 0, 1)) / 255
+    resized_image -= 0.5
+    resized_image /= 0.5
+    padding_im = np.zeros((imgC, imgH, imgW), dtype=np.float32)
+    padding_im[:, :, 0:resized_w] = resized_image
+    return padding_im
+
+# # 准备模型运行的feed_dict
+def process(input_names, image):
+    feed_dict = dict()
+    for input_name in input_names:
+        feed_dict[input_name] = image
+
+    return feed_dict
+
+def get_ignored_tokens():
+    return [0]
+
+def decode(character, text_index, text_prob=None, is_remove_duplicate=False):
+    """ convert text-index into text-label. """
+    result_list = []
+    ignored_tokens = get_ignored_tokens()
+    batch_size = len(text_index)
+    for batch_idx in range(batch_size):
+        selection = np.ones(len(text_index[batch_idx]), dtype=bool)
+        if is_remove_duplicate:
+            selection[1:] = text_index[batch_idx][1:] != text_index[batch_idx][:-1]
+        for ignored_token in ignored_tokens:
+            selection &= text_index[batch_idx] != ignored_token
+
+        char_list = [
+            character[int(text_id)].replace('\n', '')
+            for text_id in text_index[batch_idx][selection]
+        ]
+        if text_prob is not None:
+            conf_list = text_prob[batch_idx][selection]
+        else:
+            conf_list = [1] * len(selection)
+        if len(conf_list) == 0:
+            conf_list = [0]
+
+        text = ''.join(char_list)
+        result_list.append((text, np.mean(conf_list).tolist()))
+
+    return result_list
+
+def test(sess, character, output_names, input_names, image_path):
+    img_onnx = cv2.imread(image_path)
+    # img_onnx = cv2.resize(img_onnx, (320, 32))
+    # img_onnx = img_onnx.transpose((2, 0, 1)) / 255
+    
+    
+
+
+
+    img_onnx = resize_norm_img(img_onnx)
+    onnx_indata = img_onnx[np.newaxis, :, :, :]
+    onnx_indata = torch.from_numpy(onnx_indata)
+    # print('diff:', onnx_indata - input_data)
+    # print('image shape: ', onnx_indata.shape)
+    onnx_indata = np.array(onnx_indata, dtype=np.float32)
+    feed_dict = process(input_names, onnx_indata)
+    
+
+    #-----------------om  infer----------------------
+    result_list1 = modelocr.execute([onnx_indata,])
+    print(f"result_list1:{result_list1}")
+    # ----------------end------------------------------
+    print(f"output_names:{output_names,}")
+    print(f"feed_dict:{feed_dict}")
+    print(f"output_onnx.argmax(axis=2):{output_onnx.argmax(axis=2)}")
+    output_onnx = sess.run(output_names, feed_dict)
+    # print('output_onnx[0].shape: ', output_onnx[0].shape)
+    # print(' output_onnx[0]: ', output_onnx[0])
+
+    output_onnx = numpy.asarray(output_onnx[0])
+
+    preds_idx = output_onnx.argmax(axis=2)
+    preds_prob = output_onnx.max(axis=2)
+    post_result = decode(character, preds_idx, preds_prob, is_remove_duplicate=True)
+    # print(f"post_result:{post_result}")
+    if isinstance(post_result, dict):
+        rec_info = dict()
+        for key in post_result:
+            if len(post_result[key][0]) >= 2:
+                rec_info[key] = {
+                    "label": post_result[key][0][0],
+                    "score": float(post_result[key][0][1]),
+                }
+        # print(image_path, rec_info)
+    else:
+        if len(post_result[0]) >= 2:
+            # info = post_result[0][0] + "\t" + str(post_result[0][1])
+            info = post_result[0][0]
+            info_conf = post_result[0][1]
+            # print(image_path, info, info_conf)
+            return info, info_conf
+
+
+if __name__ == '__main__':
+    # https://blog.csdn.net/qq_22764813/article/details/133787584?spm=1001.2101.3001.6650.2&utm_medium=distribute.pc_relevant.none-task-blog-2%7Edefault%7EBlogCommendFromBaidu%7ERate-2-133787584-blog-115270800.235%5Ev38%5Epc_relevant_sort_base3&depth_1-utm_source=distribute.pc_relevant.none-task-blog-2%7Edefault%7EBlogCommendFromBaidu%7ERate-2-133787584-blog-115270800.235%5Ev38%5Epc_relevant_sort_base3&utm_relevant_index=5
+    
+    image_dir = "lp_image"
+    onnx_file = 'ocr_rec111302.onnx'
+    character_dict_path = 'chinese_plate_dict.txt'
+    OCR_MODEL_PATH_OM='/home/tyjt/item/modelzoo-GPL/built-in/PyTorch/Official/cv/object_detection/onnx_infer/huaweiONNXinfer/om/samples/python/level2_simple_inference/2_object_detection/om/ocr_rec111302.om'
+    #MODEL_PATH = '/home/tyjt/item/modelzoo-GPL/built-in/PyTorch/Official/cv/object_detection/onnx_infer/huaweiONNXinfer/om/samples/python/level2_simple_inference/2_object_detection/om/ocr_rec111302.om'
+    acl_resource = AclLiteResource()
+    acl_resource.init()
+    
+    print(OCR_MODEL_PATH_OM)
+    t3 = time.time()
+    modelocr = AclLiteModel(OCR_MODEL_PATH_OM)
+    print(f"modelocr:{modelocr}")
+    # input_names = [input.name for input in modelocr.get_inputs()]
+    #print(f"input_names:{input_names}")
+    #Send into model inference
+    #result_list1 = modelocr.execute([img_onnx,])
+    #print(f"result_list1:{result_list1}")
+    t4 = time.time()
+
+    sess, input_names, output_names, character = def_init(onnx_file, character_dict_path, use_space_char=True)
+     
+    files = os.listdir(image_dir)
+    for file in files:
+        image_path = os.path.join(image_dir, file)
+        # result = testobj.test(image_path)
+        info, info_conf = test(sess, character, output_names, input_names, image_path)
+        print(f"info, info_conf:{image_path}:{info, info_conf}")
+
+
+
+
